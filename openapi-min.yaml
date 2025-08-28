@@ -1,0 +1,204 @@
+openapi: 3.0.3
+info:
+  title: Notion Router (MCP bridge)
+  version: 0.1.0
+  description: MCP Notion Stack for ChatGPT Actions integration
+servers:
+  - url: https://router.path58.com
+    description: Production router endpoint
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: health
+      description: Check if the router service is healthy
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  ts:
+                    type: string
+                    format: date-time
+                    example: "2025-08-28T19:24:05.571Z"
+        '401':
+          description: Unauthorized - missing or invalid API key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
+  /mcp/tools.call:
+    post:
+      summary: Call an MCP tool (generic passthrough)
+      operationId: mcpToolsCall
+      description: Generic endpoint for calling any MCP tool via the Notion MCP server
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Name of the MCP tool to call
+                  example: "API-get-users"
+                arguments:
+                  type: object
+                  description: Arguments to pass to the MCP tool
+                  example:
+                    page_size: 2
+      responses:
+        '200':
+          description: MCP tool call result
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Response structure depends on the MCP tool called
+        '400':
+          description: Bad request - missing required fields
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Missing \"name\" in body for tools.call"
+        '401':
+          description: Unauthorized - missing or invalid API key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
+        '502':
+          description: Bad gateway - MCP server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "MCP tools.call failed"
+  /notion/pages.create:
+    post:
+      summary: Create a Notion page via MCP
+      operationId: notionPagesCreate
+      description: Creates a page in a Notion database using the MCP Notion server
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [database_id, title]
+              properties:
+                database_id:
+                  type: string
+                  description: UUID of the Notion database
+                  example: "21ed7960-213a-803f-a2bf-e39ea2c941e5"
+                title:
+                  type: string
+                  description: Title for the new page
+                  example: "New Project Page"
+                statusName:
+                  type: string
+                  description: Optional status value for the page
+                  example: "Discovery"
+      responses:
+        '200':
+          description: Created page payload from Notion (as returned by MCP)
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Notion page object with standard properties
+                properties:
+                  id:
+                    type: string
+                    description: Notion page ID
+                    example: "25dd7960-213a-8196-b935-cf1fe61cca18"
+                  url:
+                    type: string
+                    description: Notion page URL
+                    example: "https://www.notion.so/Page-Title-25dd7960213a8196b935cf1fe61cca18"
+                  created_time:
+                    type: string
+                    format: date-time
+                    example: "2025-08-28T19:24:00.000Z"
+                  last_edited_time:
+                    type: string
+                    format: date-time
+                    example: "2025-08-28T19:24:00.000Z"
+        '400':
+          description: Bad request - missing required fields
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "database_id and title are required"
+        '401':
+          description: Unauthorized - missing or invalid API key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
+        '502':
+          description: Bad gateway - MCP or Notion API error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "pages.create failed"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: API key for router authentication
+      bearerFormat: "API Key"
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+tags:
+  - name: Health
+    description: Service health monitoring
+  - name: MCP
+    description: MCP tool integration endpoints
+  - name: Notion
+    description: Notion-specific operations
