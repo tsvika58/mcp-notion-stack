@@ -1,8 +1,8 @@
 # MCP Notion Stack
 
-A consolidated Docker-based stack that combines the official Notion MCP server with a custom Notion Router for ChatGPT Actions integration.
+A production-grade, enterprise-level MCP (Model Context Protocol) Notion Stack that serves as a bridge between ChatGPT Actions and Notion's API. This system provides intelligent dual-MCP routing, comprehensive monitoring, and a clean development environment.
 
-## Architecture
+## 🏗️ Architecture Overview
 
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
@@ -17,7 +17,46 @@ A consolidated Docker-based stack that combines the official Notion MCP server w
                        └──────────────────┘    └─────────────────┘
 ```
 
-## Services
+## 🚀 Quick Start
+
+### Prerequisites
+- Docker and Docker Compose
+- Notion API token
+- Cloudflare account with named tunnel
+
+### 1. Environment Setup
+```bash
+# Copy and configure environment files
+cp headers.env.example headers.env
+cp .env.example .env
+
+# Edit headers.env with your Notion token and MCP auth
+nano headers.env
+
+# Edit .env with your Cloudflare tunnel token
+nano .env
+```
+
+### 2. Start Services
+```bash
+# Start production stack
+docker compose up -d
+
+# Start with development server
+docker compose --profile dev up -d
+```
+
+### 3. Verify Services
+```bash
+# Check service status
+docker compose ps
+
+# Test health endpoints
+curl -sf http://localhost:3030/health    # MCP Server
+curl -sf http://localhost:3032/health    # Router
+```
+
+## 📋 Services
 
 ### 1. **Notion MCP Server** (`notion_mcp`)
 - **Port**: 3030 (internal)
@@ -32,56 +71,20 @@ A consolidated Docker-based stack that combines the official Notion MCP server w
 - **Health**: `/health` endpoint
 - **Source**: `./services/router/`
 
-### 3. **Cloudflare Tunnel** (`cloudflared`)
+### 3. **Development MCP Server** (`notion_mcp_dev`)
+- **Port**: 3031 (internal)
+- **Purpose**: Clean, minimal MCP implementation for development
+- **Health**: `/health` endpoint
+- **Source**: `./services/notion-mcp-dev/`
+
+### 4. **Cloudflare Tunnel** (`cloudflared`)
 - **Purpose**: Exposes services publicly with SSL
 - **Configuration**: Named tunnel via dashboard
 - **Hostnames**: 
   - `notion-mcp.path58.com` → `notion_mcp:3030`
   - `router.path58.com` → `notion_router:3032`
 
-## Quick Start
-
-### Prerequisites
-- Docker and Docker Compose
-- Notion API token
-- Cloudflare account with named tunnel
-
-### 1. **Environment Setup**
-```bash
-# Copy and configure environment files
-cp .env.example .env
-cp headers.env.example headers.env
-
-# Edit .env with your Cloudflare tunnel token
-nano .env
-
-# Edit headers.env with your Notion token and MCP auth
-nano headers.env
-```
-
-### 2. **Start Services**
-```bash
-# Make script executable
-chmod +x validate-and-up.sh
-
-# Validate and start all services
-./validate-and-up.sh
-```
-
-### 3. **Verify Services**
-```bash
-# Check service status
-docker compose ps
-
-# Test health endpoints
-curl -sf http://localhost:3030/health    # MCP Server (if ports exposed)
-curl -sf http://localhost:3032/health    # Router (if ports exposed)
-
-# View logs
-docker compose logs -f
-```
-
-## Configuration
+## 🔧 Configuration
 
 ### Environment Files
 
@@ -93,169 +96,189 @@ docker compose logs -f
 #### `headers.env` (Local Only)
 - `NOTION_TOKEN`: Your Notion API token
 - `MCP_AUTH`: Internal MCP authentication token
-- `ROUTER_PORT`: Router port (default: 3032)
-- `LOG_LEVEL`: Logging level for services
+- `NOTION_VERSION`: Notion API version (default: 2022-06-28)
 - **NEVER commit** (contains secrets)
 
-### Service Configuration
+#### `headers.env.router` (Router Configuration)
+- `ROUTER_API_KEY`: API key for router authentication
+- `MCP_BASE_URL`: Production MCP server URL
+- `MCP_DEV_URL`: Development MCP server URL
+- Rate limiting and metrics configuration
 
-#### Router Endpoints
-- `GET /health` - Health check (returns 200 OK)
-- `POST /notion/pages.create` - Create new pages
-- `POST /notion/pages.update` - Update existing pages
-- `POST /notion/blocks.append` - Append content blocks
-- `POST /notion/comments.create` - Create comments
-- `POST /notion/databases.create` - Create databases
-- `POST /notion/tools.call` - Generic MCP passthrough
+## 📖 API Documentation
 
-#### MCP Server
-- Uses official `mcp/notion:latest` image
-- HTTP transport on port 3030
-- Authentication via MCP_AUTH token
+### Router Endpoints
 
-## Development
+#### `GET /health`
+Health check endpoint for the router service.
 
-### Local Development
+**Response:**
+```json
+{
+  "ok": true,
+  "ts": "2025-08-28T22:47:42.846Z"
+}
+```
+
+#### `POST /mcp/tools.call`
+Generic endpoint for calling any MCP tool.
+
+**Request:**
+```json
+{
+  "name": "API-get-users",
+  "arguments": {
+    "page_size": 2
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "backend": "custom",
+  "durationMs": 751,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"object\":\"list\",\"results\":[...]}"
+      }
+    ]
+  }
+}
+```
+
+#### `POST /notion/pages.create`
+Helper endpoint for creating Notion pages.
+
+**Request:**
+```json
+{
+  "database_id": "your-database-id",
+  "title": "Page Title",
+  "statusName": "Active"
+}
+```
+
+### MCP Protocol
+
+The system implements the full MCP protocol:
+
+1. **Initialize**: Establish session and capabilities
+2. **Tools/List**: Discover available tools
+3. **Tools/Call**: Execute tools with arguments
+
+## 🧪 Testing
+
+### Run Test Suite
 ```bash
-# Start services in development mode
-docker compose up -d
+# Execute comprehensive E2E tests
+./scripts/test-stack.sh
+
+# Quick health checks
+./scripts/health-check.sh
 
 # View logs
-docker compose logs -f notion_mcp
-docker compose logs -f notion_router
+./scripts/logs.sh
+```
 
-# Restart specific service
+### Manual Testing
+```bash
+# Test MCP server directly
+curl -H "Authorization: Bearer $MCP_AUTH" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
+  http://localhost:3030/mcp
+
+# Test router
+curl -H "Authorization: Bearer $ROUTER_API_KEY" \
+  http://localhost:3032/health
+```
+
+## 🔒 Security
+
+- **Authentication**: Bearer token-based security
+- **Rate Limiting**: 100 requests per 15 minutes per API key
+- **Network Isolation**: Docker networks for service isolation
+- **Health Checks**: Comprehensive service monitoring
+
+## 📊 Monitoring
+
+- **Health Checks**: Service status monitoring
+- **Metrics**: Prometheus metrics collection
+- **Logging**: Structured logging with Pino
+- **Error Tracking**: Comprehensive error handling and logging
+
+## 🚀 Deployment
+
+### Production Deployment
+```bash
+# Deploy to production
+docker compose up -d
+
+# Monitor deployment
+docker compose ps
+docker compose logs -f
+```
+
+### Development Mode
+```bash
+# Start with development server
+docker compose --profile dev up -d
+
+# Switch router to dev server
+# Edit headers.env.router: MCP_BASE_URL=http://notion_mcp_dev:3031
 docker compose restart notion_router
 ```
 
-### Adding New Services
-1. Create service directory in `./services/`
-2. Add Dockerfile and source code
-3. Update `docker-compose.yml`
-4. Add health checks and dependencies
+## 📁 Project Structure
 
-### Testing
-```bash
-# Test router endpoints
-curl -X POST http://localhost:3032/notion/pages.create \
-  -H "Content-Type: application/json" \
-  -d '{"database_id":"test","title":"Test Page"}'
-
-# Test MCP server
-curl http://localhost:3030/health
+```
+mcp-notion-stack/
+├── services/
+│   ├── router/                 # Main router service
+│   │   ├── src/               # TypeScript source
+│   │   ├── Dockerfile         # Router container
+│   │   └── package.json       # Dependencies
+│   └── notion-mcp-dev/        # Development MCP server
+│       ├── src/               # TypeScript source
+│       ├── Dockerfile         # Dev server container
+│       └── package.json       # Dependencies
+├── scripts/                    # Utility scripts
+├── docs/                       # Documentation
+├── docker-compose.yml          # Service orchestration
+├── headers.env                 # Environment configuration
+└── README.md                   # This file
 ```
 
-## Deployment
+## 🤝 Contributing
 
-### Production
-```bash
-# Set production environment
-export NODE_ENV=production
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
 
-# Start all services
-docker compose up -d
+## 📄 License
 
-# Cloudflare tunnel starts automatically
-```
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-### Cloudflare Setup
-1. **Create Named Tunnel** in Cloudflare dashboard
-2. **Get Tunnel Token** and add to `.env`
-3. **Add Public Hostnames**:
-   - `notion-mcp.path58.com` → `http://notion_mcp:3030`
-   - `router.path58.com` → `http://notion_router:3032`
-4. **Save Configuration** - Cloudflare pushes to running tunnel
+## 🆘 Support
 
-## Troubleshooting
+For issues and questions:
+1. Check the [documentation](docs/)
+2. Review [troubleshooting guide](docs/troubleshooting.md)
+3. Open an issue on GitHub
 
-### Common Issues
+## 🎯 Roadmap
 
-#### Service Won't Start
-```bash
-# Check logs
-docker compose logs <service-name>
+- [ ] Additional Notion API endpoints
+- [ ] Enhanced monitoring and alerting
+- [ ] Multi-tenant support
+- [ ] Advanced caching strategies
+- [ ] Performance optimization
 
-# Check environment
-docker compose config
+---
 
-# Restart services
-docker compose down && docker compose up -d
-```
-
-#### Health Check Failures
-```bash
-# Check service status
-docker compose ps
-
-# Test endpoints manually
-docker compose exec notion_mcp curl -sf http://localhost:3030/health
-docker compose exec notion_router curl -sf http://localhost:3032/health
-
-# Check dependencies
-docker compose logs notion_mcp
-```
-
-#### MCP Connection Issues
-```bash
-# Verify MCP server is running
-docker compose ps notion_mcp
-
-# Check MCP logs
-docker compose logs notion_mcp
-
-# Test MCP endpoint
-docker compose exec notion_mcp curl -sf http://localhost:3030/health
-```
-
-## Monitoring
-
-### Health Checks
-- **MCP Server**: `http://localhost:3030/health`
-- **Router**: `http://localhost:3032/health`
-- **Docker**: `docker compose ps`
-
-### Logs
-```bash
-# All services
-docker compose logs -f
-
-# Specific service
-docker compose logs -f notion_router
-docker compose logs -f notion_mcp
-
-# Follow with timestamps
-docker compose logs -f --timestamps
-```
-
-### Metrics
-- Service uptime via health checks
-- Docker resource usage
-- Cloudflare tunnel statistics
-
-## Security
-
-### API Keys
-- Router API key for ChatGPT Actions
-- MCP authentication between services
-- Notion API token for external access
-
-### Network
-- Services communicate via Docker network
-- External access only through Cloudflare tunnel
-- Health checks prevent unauthorized access
-
-### Environment
-- Sensitive data in `headers.env` (local only)
-- Public configuration in `.env`
-- Docker secrets for production deployments
-
-## Contributing
-
-1. **Fork** the repository
-2. **Create** feature branch
-3. **Test** with Docker Compose
-4. **Submit** pull request
-
-## License
-
-Private - Internal use only
+**Built with ❤️ for the AI and Notion communities**

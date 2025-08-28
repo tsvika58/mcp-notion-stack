@@ -80,3 +80,13 @@ credentials.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Documentation build artifacts
+docs/_build/
+docs/.doctrees/
+docs/.venv/
+
+# Temporary documentation files
+*.tmp
+*.temp
+*.bak

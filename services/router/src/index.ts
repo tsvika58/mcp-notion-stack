@@ -1,104 +1,170 @@
 import express from "express";
-import cors from "cors";
-import { notionCreatePageViaMcp, mcpSseCall } from "./mcp.js";
+import crypto from "crypto";
+import { httpLogger, logger, hash as hash12 } from "./logger.js";
+import { registry, metricsMiddleware, mcpToolCalls } from "./metrics.js";
+import { routerLimiter } from "./rateLimit.js";
+import { MCPClient } from "./mcpPool.js";
+import { decideTarget, RouterCatalog } from "./routerLogic.js";
 
 const app = express();
-app.use(cors());
 app.use(express.json({ limit: "1mb" }));
+app.use(httpLogger);
 
-const PORT = parseInt(
-  process.env.PORT || process.env.ROUTER_PORT || "3032",
-  10,
-);
-const ROUTER_API_KEY = process.env.ROUTER_API_KEY || ""; // optional bearer
-
-// Type definitions for better type safety
-interface ErrorResponse {
-  error: string;
-}
-
-interface McpToolsCallRequest {
-  name: string;
-  arguments?: Record<string, unknown>;
-}
-
-interface NotionPageCreateRequest {
-  database_id: string;
-  title: string;
-  statusName?: string;
-}
-
-interface HealthResponse {
-  ok: boolean;
-  ts: string;
-}
-
-function requireAuth(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction,
-): void {
-  if (!ROUTER_API_KEY) return next(); // no auth enforced
-  const header = req.headers.authorization || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (token !== ROUTER_API_KEY) {
-    res.status(401).json({ error: "Unauthorized" } as ErrorResponse);
-    return;
+// --- Auth helper (keeps your existing model) ---
+function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const expected = process.env.ROUTER_API_KEY;
+  if (!expected) {
+    return next(); // auth disabled
   }
-  next();
+  const auth = req.headers.authorization || "";
+  if (auth === `Bearer ${expected}`) {
+    return next();
+  }
+  res.status(401).json({ error: "Unauthorized" });
 }
 
-app.get("/health", requireAuth, (_req, res) => {
-  const response: HealthResponse = { ok: true, ts: new Date().toISOString() };
-  res.json(response);
+// --- MCP Clients ---
+const OFFICIAL = new MCPClient({
+  baseUrl: process.env.OFFICIAL_MCP_URL!,
+  authToken: process.env.OFFICIAL_MCP_AUTH!,
+  requestTimeoutMs: Number(process.env.MCP_TIMEOUT_MS || 12000),
 });
 
-// Generic passthrough for MCP JSON-RPC tools.call
-app.post("/mcp/tools.call", requireAuth, async (req, res) => {
+const CUSTOM = new MCPClient({
+  baseUrl: process.env.CUSTOM_MCP_URL!,
+  authToken: process.env.CUSTOM_MCP_AUTH!,
+  requestTimeoutMs: Number(process.env.MCP_TIMEOUT_MS || 12000),
+});
+
+let catalog: RouterCatalog = { official: new Map(), custom: new Map() };
+
+async function refreshCatalog() {
   try {
-    const payload = req.body as McpToolsCallRequest;
-    if (!payload?.name) {
-      return res.status(400).json({
-        error: 'Missing "name" in body for tools.call',
-      } as ErrorResponse);
+    const [o, c] = await Promise.all([OFFICIAL.listTools(), CUSTOM.listTools()]);
+    catalog = { official: o, custom: c };
+    logger.info({ official: o.size, custom: c.size }, "Catalog updated");
+  } catch (e) {
+    logger.error({ err: e }, "Catalog refresh failed");
+  }
+}
+
+// Health (keep yours; unthrottled but logged)
+app.get("/health", metricsMiddleware("/health"), (_req, res) => {
+  res.json({ ok: true, ts: new Date().toISOString() });
+});
+
+// Rate-limit & protect all /mcp/* and /notion/*
+app.use(["/mcp", "/notion"], requireAuth, routerLimiter);
+
+// Generic passthrough (tools.call) with smart routing
+app.post("/mcp/tools.call", metricsMiddleware("/mcp/tools.call"), async (req, res) => {
+  const { name, arguments: args, target = "auto" } = req.body || {};
+  if (!name) {
+    return res.status(400).json({ error: "Missing tool name" });
+  }
+
+  let chosen: "official" | "custom";
+  if (target === "official" || target === "custom") {
+    chosen = target;
+  } else {
+    chosen = decideTarget(name, catalog);
+  }
+
+  const primary = chosen === "official" ? OFFICIAL : CUSTOM;
+  const fallback = chosen === "official" ? CUSTOM : OFFICIAL;
+
+  const start = Date.now();
+  try {
+    if (name) {
+      mcpToolCalls.inc({ tool: String(name) });
     }
-    const { result } = await mcpSseCall({
-      jsonrpc: "2.0",
-      method: "tools/call",
-      params: { name: payload.name, arguments: payload.arguments || {} },
+    
+    const out = await primary.callTool(name, args || {});
+    return res.json({ 
+      backend: chosen, 
+      durationMs: Date.now() - start, 
+      ...out 
     });
-    res.json(result);
-  } catch (err: unknown) {
-    const errorMessage =
-      err instanceof Error ? err.message : "MCP tools.call failed";
-    res.status(502).json({ error: errorMessage } as ErrorResponse);
+  } catch (e1: any) {
+    // Try fallback once
+    try {
+      const out2 = await fallback.callTool(name, args || {});
+      return res.json({ 
+        backend: chosen === "official" ? "custom" : "custom", 
+        failover: true, 
+        durationMs: Date.now() - start, 
+        ...out2 
+      });
+    } catch (e2: any) {
+      req.log?.error({ err: e1, tool: name, backend: chosen }, "Primary backend failed");
+      req.log?.error({ err: e2, tool: name, backend: fallback === OFFICIAL ? "official" : "custom" }, "Fallback backend failed");
+      return res.status(502).json({ 
+        error: "Both backends failed", 
+        primary: e1?.message || String(e1), 
+        fallback: e2?.message || String(e2) 
+      });
+    }
   }
 });
 
-// Friendly helper: create a Notion page via MCP
-app.post("/notion/pages.create", requireAuth, async (req, res) => {
+// Friendly helper: create Notion page (auto-routes to custom for writes)
+app.post("/notion/pages.create", metricsMiddleware("/notion/pages.create"), async (req, res) => {
   try {
-    const { database_id, title, statusName } =
-      req.body as NotionPageCreateRequest;
+    const { database_id, title, statusName } = req.body || {};
     if (!database_id || !title) {
-      return res
-        .status(400)
-        .json({ error: "database_id and title are required" } as ErrorResponse);
+      return res.status(400).json({ error: "database_id and title are required" });
     }
-    const page = await notionCreatePageViaMcp({
-      database_id,
-      title,
-      statusName,
-    });
-    res.json(page);
-  } catch (err: unknown) {
-    const errorMessage =
-      err instanceof Error ? err.message : "pages.create failed";
-    res.status(502).json({ error: errorMessage } as ErrorResponse);
+
+    const toolNameOfficial = "API-post-page"; // adjust to your official tool names if present
+    const toolNameCustom   = "API-post-page";
+
+    // Pick backend via decideTarget (will select custom for write)
+    const chosen = decideTarget(toolNameOfficial, catalog);
+    const client = chosen === "official" ? OFFICIAL : CUSTOM;
+
+    const properties: any = {
+      "Project Name": { title: [{ text: { content: title } }] }
+    };
+    if (statusName) {
+      properties["Project Status"] = { select: { name: statusName } };
+    }
+
+    const args = {
+      parent: { database_id },
+      properties
+    };
+
+    const result = await client.callTool(toolNameOfficial, args);
+    res.json({ backend: chosen, ...result });
+  } catch (err: any) {
+    req.log?.error({ err }, "pages.create failed");
+    res.status(502).json({ error: "pages.create failed", detail: err?.message });
   }
 });
 
-app.listen(PORT, () => {
-  // eslint-disable-next-line no-console
-  console.log(`Router listening on :${PORT}`);
+// Protected /metrics:
+const metricsRequireAuth = String(process.env.METRICS_REQUIRE_AUTH || "true").toLowerCase() !== "false";
+
+app.get("/metrics",
+  metricsRequireAuth ? requireAuth : (_req, _res, next) => next(),
+  async (_req, res) => {
+    res.set("Content-Type", registry.contentType);
+    res.end(await registry.metrics());
+  }
+);
+
+// Start server (keep your port env):
+const port = Number(process.env.PORT || process.env.ROUTER_PORT || 3032);
+app.listen(port, "0.0.0.0", async () => {
+  logger.info({ port }, "Router started");
+  
+  // Initialize MCP clients and catalog
+  try {
+    await OFFICIAL.init().catch((e) => logger.warn({ err: e }, "Official MCP init failed"));
+    await CUSTOM.init().catch((e) => logger.warn({ err: e }, "Custom MCP init failed"));
+    await refreshCatalog();
+    setInterval(refreshCatalog, 60_000); // refresh every minute
+  } catch (e) {
+    logger.error({ err: e }, "Failed to initialize MCP clients");
+  }
 });

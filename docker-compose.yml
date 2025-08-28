@@ -6,61 +6,71 @@ networks:
     driver: bridge
 
 services:
+  # Production MCP Server (stable, tested)
   notion_mcp:
     image: mcp/notion:latest
     container_name: notion_mcp
-    env_file:
-      - headers.env.clean
     environment:
-      LOG_LEVEL: ${LOG_LEVEL:-info}
       NOTION_TOKEN: ${NOTION_TOKEN}
       NOTION_VERSION: ${NOTION_VERSION:-2022-06-28}
-      # Expose HTTP transport with auth token
       AUTH_TOKEN: ${MCP_AUTH}
-    command: ["--transport", "http", "--port", "3030", "--auth-token", "${MCP_AUTH}"]
+    command: ["notion-mcp-server", "--transport", "http", "--port", "3030", "--auth-token", "${MCP_AUTH}"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3030/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
     networks: [mcp]
     restart: unless-stopped
 
+  # Development MCP Server (clean, minimal)
+  notion_mcp_dev:
+    build:
+      context: ./services/notion-mcp-dev
+    container_name: notion_mcp_dev
+    environment:
+      NOTION_TOKEN: ${NOTION_TOKEN}
+      NOTION_VERSION: ${NOTION_VERSION:-2022-06-28}
+      AUTH_TOKEN: ${MCP_AUTH}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3031/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    networks: [mcp]
+    restart: unless-stopped
+    profiles: ["dev"] # Only start when explicitly requested
+
+  # Router Service
   notion_router:
-    # If you want to build your local router:
     build:
       context: ./services/router
-    # If you have a published image, you can replace build: with:
-    # image: your-dockerhub/repo:tag
+      dockerfile: Dockerfile
     container_name: notion_router
     env_file:
-      - headers.env.clean
-    environment:
-      PORT: ${ROUTER_PORT:-3032}
-      LOG_LEVEL: ${ROUTER_LOG_LEVEL:-info}
-      MCP_BASE_URL: ${MCP_BASE_URL:-http://notion_mcp:3030}
-      MCP_AUTH: ${MCP_AUTH}
-      # OPENAI_API_KEY: ${OPENAI_API_KEY}   # uncomment if needed
+      - headers.env.router
     depends_on:
       notion_mcp:
         condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:${ROUTER_PORT:-3032}/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:3032/health"]
       interval: 10s
       timeout: 3s
       retries: 20
-      start_period: 10s
     networks: [mcp]
     restart: unless-stopped
-    # for local testing you can expose:
-    # ports: ["3030:3030"]   # notion_mcp
-    # ports: ["3032:3032"]   # notion_router
 
+  # Cloudflare Tunnel
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
-    environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    env_file:
+      - .env
     command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN}"]
     depends_on:
       notion_mcp:
         condition: service_started
       notion_router:
-        condition: service_healthy
+        condition: service_started
     networks: [mcp]
     restart: unless-stopped
