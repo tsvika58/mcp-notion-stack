@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "dotenv/config";
 import express from "express";
 import type { Request, Response } from "express";
 import fetch from "node-fetch";
