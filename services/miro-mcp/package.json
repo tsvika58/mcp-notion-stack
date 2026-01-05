@@ -1,0 +1,36 @@
+{
+  "name": "miro-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Miro - enables Claude Desktop to interact with Miro boards",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "miro-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "miro",
+    "claude",
+    "ai",
+    "whiteboard"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "express": "^4.21.2",
+    "eventsource-parser": "^1.1.1",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.7.2"
+  }
+}

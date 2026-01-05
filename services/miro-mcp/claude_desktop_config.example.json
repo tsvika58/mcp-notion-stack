@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "miro": {
+      "url": "http://localhost:3033/mcp",
+      "transport": "http"
+    }
+  }
+}

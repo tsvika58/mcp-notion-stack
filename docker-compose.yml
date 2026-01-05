@@ -41,6 +41,25 @@ services:
     restart: unless-stopped
     profiles: ["dev"] # Only start when explicitly requested
 
+  # Miro MCP Server
+  miro_mcp:
+    build:
+      context: ./services/miro-mcp
+    container_name: miro_mcp
+    environment:
+      MIRO_TOKEN: ${MIRO_TOKEN}
+      AUTH_TOKEN: ${MCP_AUTH}
+    ports:
+      - "3033:3033"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3033/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    networks: [mcp]
+    restart: unless-stopped
+    profiles: ["miro"] # Only start when explicitly requested
+
   # Router Service
   notion_router:
     build:
